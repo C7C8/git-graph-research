@@ -3,13 +3,15 @@ import argparse
 import json
 import sys
 from typing import List
+
 import networkx as nx
 import pandas as pd
-from networkx.algorithms.community import asyn_lpa_communities
 from matplotlib import pyplot as plt
+from networkx import pagerank
+from networkx.algorithms.community import asyn_lpa_communities
 
 from . import __version__
-from .graph import generate_author_graph, generate_file_graph, convert_to_json
+from .graph import generate_author_graph, generate_file_graph, convert_to_json, generate_bi_graph
 from .parser import parse_raw_commits, Commit
 
 
@@ -22,7 +24,7 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument("-t", "--threshold", default=2, type=int,
                         help="Minimum edge weight to be considered when pruning")
     parser.add_argument("repo", type=str, help="Path to .git folder to analyze", default=".")
-    parser.add_argument("type", type=str, choices=["commit", "file", "author"])
+    parser.add_argument("type", type=str, choices=["bi", "file", "author"], help="Type of data format to generate")
     subparsers = parser.add_subparsers(title="Operation", description="Operation to perform")
 
     graph_gen_parser = subparsers.add_parser("export", help="Data export operations")
@@ -37,13 +39,33 @@ def get_parser() -> argparse.ArgumentParser:
                                   help="Type of layout to use when drawing")
     visualize_parser.set_defaults(func=_visualize)
 
-    contact_parser = subparsers.add_parser("whodoitalkto")
+    rank_parser = subparsers.add_parser("rank", help="PageRank ranking of graphs to find the top N most important items")
+    rank_parser.add_argument("-n", "--number", help="Number of top items to print", type=int, default=10)
+    rank_parser.add_argument("-a", "--alpha", help="Damping factor (alpha) used in pagerank", type=float, default=0.85)
+    rank_parser.set_defaults(func=_rank)
+
+    contact_parser = subparsers.add_parser("whodoitalkto", help="Find appropriate neighbors on the graph given a single target")
+    contact_parser.add_argument("target", type=str, help="Target to generate advice for")
+    contact_parser.add_argument("-n", "--number", type=int, help="Number of results N to return", default=3)
+    contact_parser.add_argument("-d", "--depth", type=int, default=1, help="Connection depth D to search to")
+    contact_parser.add_argument("-m", "--method", type=str, choices=["nearest", "bfs-terminal", "next-community"],
+                                  help="""Algorithm to use when searching. Nearest mode will take all direct
+                                  neighbors to the target, sort them by connection strength, and return the top N of
+                                  those. BFS-terminal will execute a breadth-first search to the target depth, then choose
+                                  the top N nodes with the strongest connection to the target. Next-community mode will
+                                  act similar to BFS-terminal, but will start from the bounds of the community instead.""")
+    contact_parser.set_defaults(func=_whodoitalkto)
 
     return parser
 
 
 def _get_graph(args: argparse.Namespace, commits: List[Commit]):
-    return (generate_file_graph if args.type == "file" else generate_author_graph)(commits, args.threshold)
+    if args.type == "file":
+        return generate_file_graph(commits, args.threshold)
+    elif args.type == "author":
+        return generate_author_graph(commits, args.threshold)
+    elif args.type == "bi":
+        return generate_bi_graph(commits, args.threshold)
 
 
 @parse_raw_commits
@@ -63,6 +85,7 @@ def _export(args: argparse.Namespace, commits: List[Commit]):
 @parse_raw_commits
 def _visualize(args: argparse.Namespace, commits: List[Commit]):
     """Function for the visualize subcommand"""
+    plt.figure(figsize=(18, 18))
     graph = _get_graph(args, commits)
 
     if args.layout == "kamada":
@@ -87,3 +110,23 @@ def _visualize(args: argparse.Namespace, commits: List[Commit]):
     plt.show()
 
 
+@parse_raw_commits
+def _whodoitalkto(args: argparse.Namespace, commits: List[Commit]):
+    """Function for the whodoitalkto subcommand"""
+    graph = _get_graph(args, commits)
+
+    if args.target not in graph.nodes:
+        print("Target '{}' not found in graph".format(args.target), file=sys.stderr)
+        exit(1)
+
+
+@parse_raw_commits
+def _rank(args: argparse.Namespace, commits: List[Commit]):
+    """Function for ranking subcommand"""
+    graph = _get_graph(args, commits)
+    ranking_dict = pagerank(graph, alpha=args.alpha, weight="count")
+    ranking = list(sorted(ranking_dict.items(), key=lambda item: item[1], reverse=True))
+    for rank, node in enumerate(ranking):
+        if rank >= args.number:
+            break
+        print("{rank}. {name} ({val})".format(rank=rank + 0, name=node[0], val=node[1]))

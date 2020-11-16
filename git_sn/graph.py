@@ -1,12 +1,15 @@
+import copy
 import itertools
 import os
-from typing import Dict
+from typing import Dict, List
 
 import networkx as nx
 from networkx.algorithms.community import asyn_lpa_communities
 
+from git_sn.parser import Commit
 
-def generate_file_graph(commits, threshold=2) -> nx.Graph:
+
+def generate_file_graph(commits: List[Commit], threshold=2) -> nx.Graph:
     """Generate a graph of files as connected """
     g = nx.Graph()
     # For every commit, link files that occur in the same commit
@@ -31,7 +34,7 @@ def generate_file_graph(commits, threshold=2) -> nx.Graph:
     return g
 
 
-def generate_author_graph(commits, threshold=1) -> nx.Graph:
+def generate_author_graph(commits: List[Commit], threshold=1) -> nx.Graph:
     """Generate a graph of authors as connected by commits to files"""
     files = {}
     # Assemble a list of files and the authors who contributed to them
@@ -59,10 +62,55 @@ def generate_author_graph(commits, threshold=1) -> nx.Graph:
             else:
                 g.add_edge(person1, person2, count=val)
 
-    # Do some filtering
+    # Prune edges that don't meet the threshold
     for edge in g.edges:
         if g.edges[edge]["count"] < threshold:
             g.remove_edge(*edge)
+    _assign_groups(g)
+    return g
+
+
+def generate_bi_graph(commits: List[Commit], threshold=2) -> nx.Graph:
+    """Generate a graph of authors and files, where files connect authors and vice versa"""
+    g = nx.Graph()
+
+    # First pass: collect a list of unique authors and unique files, and enter them all into the graph. This *should*
+    # be faster than doing this in one pass due to the amount of checking required
+    for author in {commit["author"] for commit in commits}:
+        g.add_node(author, count=0)
+    for file in set(list(itertools.chain(*[commit["files"] for commit in commits]))):
+        g.add_node(file, count=0)
+
+    # Second pass: associate each file and author together. Files are also associated together in chain.
+    for commit in commits:
+        for file in commit["files"]:
+            author = commit["author"]
+            if g.has_edge(author, file):
+                g.edges[author, file]["count"] += 1
+            else:
+                g.add_edge(author, file, count=1)
+            g.nodes[file]["count"] += 1
+            g.nodes[author]["count"] += 1
+        
+        for file1, file2 in itertools.combinations(commit["files"], 2):
+            if g.has_edge(file1, file2):
+                g.edges[file1, file2]["count"] += 1
+            else:
+                g.add_edge(file1, file2, count=1)
+
+    # Skip pruning if threshold wouldn't make a difference anyways
+    if threshold > 2:
+        # Prune edges that don't meet the threshold
+        for edge in g.edges:
+            if g.edges[edge]["count"] < threshold:
+                g.remove_edge(*edge)
+
+        # Prune nodes that don't meet the threshold
+        temp_nodes = copy.deepcopy(g.nodes)
+        for node in temp_nodes:
+            if temp_nodes[node]["count"] < threshold:
+                g.remove_node(node)
+
     _assign_groups(g)
     return g
 
