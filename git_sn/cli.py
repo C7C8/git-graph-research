@@ -134,10 +134,16 @@ def _visualize(args: argparse.Namespace, commits: List[Commit]):
     if type(graph) is not nx.DiGraph and nx.has_bridges(graph):
         nx.draw_networkx_edges(graph, edgelist=list(nx.bridges(graph)), pos=pos, width=0.2, alpha=0.5, edge_color="r")
 
-    # Nodes with colors
+    # Nodes with colors and sizes
+    max_count = max([graph.nodes[n]["count"] for n in graph.nodes])
+    min_count = min([graph.nodes[n]["count"] for n in graph.nodes])
+    count_range = max_count - min_count
+    max_size = 75
+    min_size = 5
+    node_sizes = [((graph.nodes[n]["count"] - min_count) / count_range) * (max_size - min_size) + min_size for n in graph.nodes]
     groups = list(asyn_lpa_communities(graph, weight="count"))
     colors = [[file in group for group in groups].index(True) for file in graph]
-    nx.draw_networkx_nodes(graph, pos=pos, node_color=colors, cmap="tab20", node_size=5)
+    nx.draw_networkx_nodes(graph, pos=pos, node_color=colors, cmap="tab20", node_size=node_sizes)
 
     # Labels
     nx.draw_networkx_labels(graph, pos, font_size=1)

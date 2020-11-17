@@ -23,6 +23,16 @@ def generate_file_graph(commits: List[Commit], threshold=2) -> nx.Graph:
             else:
                 g.add_edge(file1, file2, count=1)
 
+        # Increment counts for each file by one
+        for file in commit["files"]:
+            file = os.path.basename(file)
+            if file not in g.nodes:
+                g.add_node(file, count=1)
+            elif "count" not in g.nodes[file]:
+                g.nodes[file]["count"] = 1
+            else:
+                g.nodes[file]["count"] += 1
+
     # Do some filtering
     for edge in g.edges:
         if g.edges[edge]["count"] < threshold:
