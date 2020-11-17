@@ -1,18 +1,42 @@
 """The command line interface that drives the various scripts in this package"""
 import argparse
+import inspect
 import json
 import sys
-from typing import List
+from typing import List, Dict
 
 import networkx as nx
 import pandas as pd
 from matplotlib import pyplot as plt
-from networkx import pagerank
 from networkx.algorithms.community import asyn_lpa_communities
 
 from . import __version__
 from .graph import generate_author_graph, generate_file_graph, convert_to_json, generate_bi_graph
 from .parser import parse_raw_commits, Commit
+
+centrality_algo_dict = {
+    "pagerank": nx.pagerank,
+    "degree": nx.degree_centrality,
+    "eigenvector": nx.eigenvector_centrality,
+    "katz": nx.katz_centrality,
+    "closeness": nx.closeness_centrality,
+    "current_flow_closeness": nx.current_flow_betweenness_centrality,
+    "information": nx.information_centrality,
+    "betweenness": nx.betweenness_centrality,
+    "betweenness_source": nx.betweenness_centrality_source,
+    "betweenness_edge": nx.edge_betweenness_centrality,
+    "betweenness_current_flow": nx.current_flow_betweenness_centrality,
+    "edge_current_flow_betweenness": nx.edge_current_flow_betweenness_centrality,
+    "communicability": nx.communicability_betweenness_centrality,
+    "load": nx.load_centrality,
+    "subgraph": nx.subgraph_centrality,
+    "subgraph_centrality_exp": nx.subgraph_centrality_exp,
+    "estrada": nx.estrada_index,
+    "harmonic": nx.harmonic_centrality,
+    "global_reaching": nx.global_reaching_centrality,
+    "second_order": nx.second_order_centrality,
+    "voterank": nx.voterank
+}
 
 
 def get_parser() -> argparse.ArgumentParser:
@@ -39,9 +63,12 @@ def get_parser() -> argparse.ArgumentParser:
                                   help="Type of layout to use when drawing")
     visualize_parser.set_defaults(func=_visualize)
 
-    rank_parser = subparsers.add_parser("rank", help="PageRank ranking of graphs to find the top N most important items")
-    rank_parser.add_argument("-n", "--number", help="Number of top items to print", type=int, default=10)
-    rank_parser.add_argument("-a", "--alpha", help="Damping factor (alpha) used in pagerank", type=float, default=0.85)
+    rank_parser = subparsers.add_parser("rank", help="Centrality ranking of data to find the top N most important items")
+    rank_parser.add_argument("algorithm", type=str, help="Centrality algorithm to use", choices=centrality_algo_dict.keys())
+    rank_parser.add_argument("-n", "--number", help="Number of top items to print. If 0, prints all", type=int, default=10)
+    rank_parser.add_argument("-a", "--alpha", help="Alpha factor for various algorithms", type=float, default=0.85)
+    rank_parser.add_argument("-b", "--beta", help="Beta factor for various algorithms", type=float, default=1)
+    rank_parser.add_argument("-m", "--max-iter", help="Max iterations for iterative-based solvers", type=int, default=1000)
     rank_parser.set_defaults(func=_rank)
 
     contact_parser = subparsers.add_parser("whodoitalkto", help="Find appropriate neighbors on the graph given a single target")
@@ -120,13 +147,34 @@ def _whodoitalkto(args: argparse.Namespace, commits: List[Commit]):
         exit(1)
 
 
+def _filter_dict(filterable: Dict, func):
+    """For a dict of kwargs and a given function, filter the kwargs to kwargs the function is capable of accepting"""
+    sig = inspect.signature(func)
+    filter_keys = [param.name for param in sig.parameters.values() if param.kind == param.POSITIONAL_OR_KEYWORD]
+    filter_keys = filter(lambda key: key in filterable.keys(), filter_keys)
+    filtered_dict = {filter_key: filterable[filter_key] for filter_key in filter_keys}
+    return filtered_dict
+
+
 @parse_raw_commits
 def _rank(args: argparse.Namespace, commits: List[Commit]):
     """Function for ranking subcommand"""
     graph = _get_graph(args, commits)
-    ranking_dict = pagerank(graph, alpha=args.alpha, weight="count")
-    ranking = list(sorted(ranking_dict.items(), key=lambda item: item[1], reverse=True))
-    for rank, node in enumerate(ranking):
-        if rank >= args.number:
-            break
-        print("{rank}. {name} ({val})".format(rank=rank + 0, name=node[0], val=node[1]))
+    algo = centrality_algo_dict[args.algorithm]
+    kwargs = _filter_dict({
+        "alpha": args.alpha,
+        "beta": args.beta,
+        "weight": "count",
+        "max_iter": args.max_iter
+    }, algo)
+
+    result = algo(graph, **kwargs)
+    if isinstance(result, dict):
+        ranking = list(sorted(result.items(), key=lambda item: item[1], reverse=True))
+        for rank, node in enumerate(ranking):
+            if rank >= args.number:
+                break
+            print("{rank}. {name} ({val})".format(rank=rank + 0, name=node[0], val=node[1]))
+    elif isinstance(result, float):
+        print(result)
+

@@ -92,18 +92,14 @@ def generate_bi_graph(commits: List[Commit], threshold=2) -> nx.Graph:
             g.nodes[file]["count"] += 1
             g.nodes[author]["count"] += 1
         
-        for file1, file2 in itertools.combinations(commit["files"], 2):
-            if g.has_edge(file1, file2):
-                g.edges[file1, file2]["count"] += 1
-            else:
-                g.add_edge(file1, file2, count=1)
-
     # Skip pruning if threshold wouldn't make a difference anyways
     if threshold > 2:
         # Prune edges that don't meet the threshold
         for edge in g.edges:
             if g.edges[edge]["count"] < threshold:
                 g.remove_edge(*edge)
+                edge[0]["count"] -= 1
+                edge[1]["count"] -= 1
 
         # Prune nodes that don't meet the threshold
         temp_nodes = copy.deepcopy(g.nodes)
