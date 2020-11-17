@@ -71,9 +71,16 @@ def get_parser() -> argparse.ArgumentParser:
     rank_parser.add_argument("-m", "--max-iter", help="Max iterations for iterative-based solvers", type=int, default=1000)
     rank_parser.set_defaults(func=_rank)
 
+    dispersion_parser = subparsers.add_parser("dispersion", help="Dispersion calculator for two nodes U and V")
+    dispersion_parser.add_argument("u", type=str)
+    dispersion_parser.add_argument("v", type=str, nargs="?")
+    dispersion_parser.add_argument("-a", "--alpha", type=float, default=0.6, help="Alpha value to use in calculation")
+    dispersion_parser.add_argument("-n", "--number", type=int, help="Number of results N to return. Only used when v is not provided", default=10)
+    dispersion_parser.set_defaults(func=_dispersion)
+
     contact_parser = subparsers.add_parser("whodoitalkto", help="Find appropriate neighbors on the graph given a single target")
     contact_parser.add_argument("target", type=str, help="Target to generate advice for")
-    contact_parser.add_argument("-n", "--number", type=int, help="Number of results N to return", default=3)
+    contact_parser.add_argument("-n", "--number", type=int, help="Number of results N to return", default=10)
     contact_parser.add_argument("-d", "--depth", type=int, default=1, help="Connection depth D to search to")
     contact_parser.add_argument("-m", "--method", type=str, choices=["nearest", "bfs-terminal", "next-community"],
                                   help="""Algorithm to use when searching. Nearest mode will take all direct
@@ -178,3 +185,16 @@ def _rank(args: argparse.Namespace, commits: List[Commit]):
     elif isinstance(result, float):
         print(result)
 
+
+@parse_raw_commits
+def _dispersion(args: argparse.Namespace, commits: List[Commit]):
+    graph = _get_graph(args, commits)
+    if args.v is not None:
+        print(nx.dispersion(graph, args.u, args.v, alpha=args.alpha))
+    else:
+        result = {v: nx.dispersion(graph, args.u, v, alpha=args.alpha) for v in graph.nodes if v != args.u}
+        ranking = list(sorted(result.items(), key=lambda item: item[1], reverse=True))
+        for rank, node in enumerate(ranking):
+            if rank >= args.number:
+                break
+            print("{rank}. {name} ({val})".format(rank=rank + 0, name=node[0], val=node[1]))
