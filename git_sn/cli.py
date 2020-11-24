@@ -3,7 +3,7 @@ import argparse
 import inspect
 import json
 import sys
-from typing import List, Dict
+from typing import List, Dict, Callable
 
 import networkx as nx
 import pandas as pd
@@ -12,7 +12,7 @@ from networkx.algorithms.community import asyn_lpa_communities
 
 from . import __version__
 from .graph import generate_author_graph, generate_file_graph, convert_to_json, generate_bi_graph
-from .parser import parse_raw_commits, Commit
+from .parser import uses_commits, Commit, get_commits_from_repo
 
 centrality_algo_dict = {
     "pagerank": nx.pagerank,
@@ -47,7 +47,7 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument("-t", "--threshold", default=2, type=int,
                         help="Minimum edge weight to be considered when pruning")
-    parser.add_argument("repo", type=str, help="Path to .git folder to analyze", default=".")
+    parser.add_argument("-r", "--repo", type=str, help="Path to .git folder to analyze", required=False)
     parser.add_argument("type", type=str, choices=["bi", "file", "author"], help="Type of data format to generate")
     subparsers = parser.add_subparsers(title="Operation", description="Operation to perform")
 
@@ -65,6 +65,12 @@ def get_parser() -> argparse.ArgumentParser:
 
     rank_parser = subparsers.add_parser("rank", help="Centrality ranking of data to find the top N most important items")
     rank_parser.add_argument("algorithm", type=str, help="Centrality algorithm to use", choices=centrality_algo_dict.keys())
+    rank_parser.add_argument("-c", "--correlate", type=argparse.FileType("r"),
+                             help="CSV file to read for performing mass correlations. The first row in the CSV should "
+                                  "be the path to a repository, while the remaining rows should be your expected results"
+                                  " in order from most important to least important. The output results will be the"
+                                  "Spearman rank correlation coefficient for each repository. The argument to --repo "
+                                  "is ignored if this option is provided.")
     rank_parser.add_argument("-n", "--number", help="Number of top items to print. If 0, prints all", type=int, default=10)
     rank_parser.add_argument("-a", "--alpha", help="Alpha factor for various algorithms", type=float, default=0.85)
     rank_parser.add_argument("-b", "--beta", help="Beta factor for various algorithms", type=float, default=1)
@@ -102,7 +108,7 @@ def _get_graph(args: argparse.Namespace, commits: List[Commit]):
         return generate_bi_graph(commits, args.threshold)
 
 
-@parse_raw_commits
+@uses_commits
 def _export(args: argparse.Namespace, commits: List[Commit]):
     """Function for the export subcommand"""
     if args.type == "commit":
@@ -116,7 +122,7 @@ def _export(args: argparse.Namespace, commits: List[Commit]):
         pd.to_pickle(nx.to_pandas_edgelist(graph), args.out)
 
 
-@parse_raw_commits
+@uses_commits
 def _visualize(args: argparse.Namespace, commits: List[Commit]):
     """Function for the visualize subcommand"""
     plt.figure(figsize=(18, 18))
@@ -150,7 +156,7 @@ def _visualize(args: argparse.Namespace, commits: List[Commit]):
     plt.show()
 
 
-@parse_raw_commits
+@uses_commits
 def _whodoitalkto(args: argparse.Namespace, commits: List[Commit]):
     """Function for the whodoitalkto subcommand"""
     graph = _get_graph(args, commits)
@@ -169,10 +175,8 @@ def _filter_dict(filterable: Dict, func):
     return filtered_dict
 
 
-@parse_raw_commits
-def _rank(args: argparse.Namespace, commits: List[Commit]):
+def _rank(args: argparse.Namespace):
     """Function for ranking subcommand"""
-    graph = _get_graph(args, commits)
     algo = centrality_algo_dict[args.algorithm]
     kwargs = _filter_dict({
         "alpha": args.alpha,
@@ -181,18 +185,36 @@ def _rank(args: argparse.Namespace, commits: List[Commit]):
         "max_iter": args.max_iter
     }, algo)
 
-    result = algo(graph, **kwargs)
-    if isinstance(result, dict):
-        ranking = list(sorted(result.items(), key=lambda item: item[1], reverse=True))
-        for rank, node in enumerate(ranking):
-            if rank >= args.number:
-                break
-            print("{rank}. {name} ({val})".format(rank=rank + 0, name=node[0], val=node[1]))
-    elif isinstance(result, float):
-        print(result)
+    if "correlate" not in args:
+        commits = get_commits_from_repo(args.repo)
+        graph = _get_graph(args, commits)
+        result = algo(graph, **kwargs)
+        if isinstance(result, dict):
+            ranking = list(sorted(result.items(), key=lambda item: item[1], reverse=True))
+            for rank, node in enumerate(ranking):
+                if rank >= args.number:
+                    break
+                print(node[0])
+        elif isinstance(result, float):
+            print(result)
+        return
+
+    # Process CSV and calculate correlations for many repos at once
+    df = pd.read_csv(args.correlate)
+    ranks = {}
+    for column in df.columns:
+        commits = get_commits_from_repo(column)
+        graph = _get_graph(args, commits)
+        result = algo(graph, **kwargs)
+        ranks[column], _ = zip(*sorted(result.items(), key=lambda item: item[1], reverse=True)[:args.number])
+    df_predicted = pd.DataFrame(ranks)
+
+    # For some reason .corrwith() isn't working -_-
+    for column in df.columns:
+        print("{:<24}: {:.3f}".format(column, df_predicted[column].corr(df[column], method="spearman")))
 
 
-@parse_raw_commits
+@uses_commits
 def _dispersion(args: argparse.Namespace, commits: List[Commit]):
     graph = _get_graph(args, commits)
     if args.v is not None:

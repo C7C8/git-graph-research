@@ -46,20 +46,25 @@ def split_commits(file: IO) -> List[List[str]]:
 
 
 # Annotation for allowing any function to accept a list repos and get a list of raw commits
-def parse_raw_commits(func: Callable[[argparse.Namespace, List[Commit]], NoReturn]):
+def uses_commits(func: Callable[[argparse.Namespace, List[Commit]], NoReturn]):
     def decorator_wrapper(args):
-        repo = args.repo
-        commits = []
-        try:
-            os.stat(repo)
-            out = subprocess.run(["git", "--git-dir", repo, "log", "--name-only", "--stat"], stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE)
-            if out.returncode > 0:
-                print("git --git-dir {} log --name-only --stat failed".format(repo), file=sys.stderr)
-                print(out.stderr.decode("utf-8"), file=sys.stderr)
-            commits.extend(parse_commits(StringIO(out.stdout.decode("utf-8", errors="backslashreplace"))))
-            func(args, commits)
-        except (FileNotFoundError, IOError):
-            print("Repo '{}' not found or inaccessible".format(repo), file=sys.stderr)
+        if "repo" not in args:
+            print("--repo is required for this subcommand", file=sys.stderr)
             exit(1)
+        commits = get_commits_from_repo(args.repo)
+        func(args, commits)
     return decorator_wrapper
+
+
+def get_commits_from_repo(repo: str) -> List[Commit]:
+    try:
+        os.stat(repo)
+        out = subprocess.run(["git", "--git-dir", repo, "log", "--name-only", "--stat"], stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE)
+        if out.returncode > 0:
+            print("git --git-dir {} log --name-only --stat failed".format(repo), file=sys.stderr)
+            print(out.stderr.decode("utf-8"), file=sys.stderr)
+        return parse_commits(StringIO(out.stdout.decode("utf-8", errors="backslashreplace")))
+    except (FileNotFoundError, IOError):
+        print("Repo '{}' not found or inaccessible".format(repo), file=sys.stderr)
+        exit(1)
