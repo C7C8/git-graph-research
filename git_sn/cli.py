@@ -65,8 +65,8 @@ def get_parser() -> argparse.ArgumentParser:
 
     rank_parser = subparsers.add_parser("rank", help="Centrality ranking of data to find the top N most important items")
     rank_parser.add_argument("algorithm", type=str, help="Centrality algorithm to use", choices=centrality_algo_dict.keys())
-    rank_parser.add_argument("-c", "--correlate", type=argparse.FileType("r"),
-                             help="CSV file to read for performing mass correlations. The first row in the CSV should "
+    rank_parser.add_argument("-c", "--correlate", type=argparse.FileType("rb"),
+                             help="CSV or Excel file to read for performing mass correlations. The first row should "
                                   "be the path to a repository, while the remaining rows should be your expected results"
                                   " in order from most important to least important. The output results will be the"
                                   "Spearman rank correlation coefficient for each repository. The argument to --repo "
@@ -200,7 +200,11 @@ def _rank(args: argparse.Namespace):
         return
 
     # Process CSV and calculate correlations for many repos at once
-    df = pd.read_csv(args.correlate)
+    df: pd.DataFrame
+    if ".xlsx" in args.correlate.name:
+        df = pd.read_excel(args.correlate)
+    else:
+        df = pd.read_csv(args.correlate)
     ranks = {}
     for column in df.columns:
         commits = get_commits_from_repo(column)

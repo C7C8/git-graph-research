@@ -10,6 +10,7 @@ networkx = "*"
 matplotlib = "*"
 pandas = "*"
 scipy = "*"
+xlrd = "*"
 
 [requires]
 python_version = "3.8"
