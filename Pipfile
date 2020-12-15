@@ -11,6 +11,10 @@ matplotlib = "*"
 pandas = "*"
 scipy = "*"
 xlrd = "*"
+tqdm = "*"
+jupyter = "*"
+notebook-as-pdf = "*"
+seaborn = "*"
 
 [requires]
-python_version = "3.8"
+python_version = "3.9"

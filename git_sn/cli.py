@@ -2,11 +2,17 @@
 import argparse
 import inspect
 import json
+import pickle
 import sys
-from typing import List, Dict, Callable
+from concurrent.futures.thread import ThreadPoolExecutor
+from copy import deepcopy
+from multiprocessing import Pool
+from multiprocessing.pool import ThreadPool
+from typing import List, Dict, Callable, Tuple
 
 import networkx as nx
 import pandas as pd
+import tqdm as tqdm
 from matplotlib import pyplot as plt
 from networkx.algorithms.community import asyn_lpa_communities
 
@@ -34,7 +40,7 @@ centrality_algo_dict = {
     "estrada": nx.estrada_index,
     "harmonic": nx.harmonic_centrality,
     "global_reaching": nx.global_reaching_centrality,
-    "second_order": nx.second_order_centrality,
+    # "second_order": nx.second_order_centrality,
     "voterank": nx.voterank
 }
 
@@ -63,38 +69,44 @@ def get_parser() -> argparse.ArgumentParser:
                                   help="Type of layout to use when drawing")
     visualize_parser.set_defaults(func=_visualize)
 
-    rank_parser = subparsers.add_parser("rank", help="Centrality ranking of data to find the top N most important items")
-    rank_parser.add_argument("algorithm", type=str, help="Centrality algorithm to use", choices=centrality_algo_dict.keys())
+    rank_parser = subparsers.add_parser("rank",
+                                        help="Centrality ranking of data to find the top N most important items")
+    rank_parser.add_argument("algorithm", type=str, help="Centrality algorithm to use",
+                             choices=centrality_algo_dict.keys())
     rank_parser.add_argument("-c", "--correlate", type=argparse.FileType("rb"),
                              help="CSV or Excel file to read for performing mass correlations. The first row should "
                                   "be the path to a repository, while the remaining rows should be your expected results"
                                   " in order from most important to least important. The output results will be the"
                                   "Spearman rank correlation coefficient for each repository. The argument to --repo "
                                   "is ignored if this option is provided.")
-    rank_parser.add_argument("-n", "--number", help="Number of top items to print. If 0, prints all", type=int, default=10)
+    rank_parser.add_argument("-n", "--number", help="Number of top items to print. If 0, prints all", type=int,
+                             default=10)
     rank_parser.add_argument("-a", "--alpha", help="Alpha factor for various algorithms", type=float, default=0.85)
     rank_parser.add_argument("-b", "--beta", help="Beta factor for various algorithms", type=float, default=1)
-    rank_parser.add_argument("-m", "--max-iter", help="Max iterations for iterative-based solvers", type=int, default=1000)
+    rank_parser.add_argument("-m", "--max-iter", help="Max iterations for iterative-based solvers", type=int,
+                             default=1000)
     rank_parser.set_defaults(func=_rank)
 
     dispersion_parser = subparsers.add_parser("dispersion", help="Dispersion calculator for two nodes U and V")
     dispersion_parser.add_argument("u", type=str)
     dispersion_parser.add_argument("v", type=str, nargs="?")
     dispersion_parser.add_argument("-a", "--alpha", type=float, default=0.6, help="Alpha value to use in calculation")
-    dispersion_parser.add_argument("-n", "--number", type=int, help="Number of results N to return. Only used when v is not provided", default=10)
+    dispersion_parser.add_argument("-n", "--number", type=int,
+                                   help="Number of results N to return. Only used when v is not provided", default=10)
     dispersion_parser.set_defaults(func=_dispersion)
 
-    contact_parser = subparsers.add_parser("whodoitalkto", help="Find appropriate neighbors on the graph given a single target")
-    contact_parser.add_argument("target", type=str, help="Target to generate advice for")
-    contact_parser.add_argument("-n", "--number", type=int, help="Number of results N to return", default=10)
-    contact_parser.add_argument("-d", "--depth", type=int, default=1, help="Connection depth D to search to")
-    contact_parser.add_argument("-m", "--method", type=str, choices=["nearest", "bfs-terminal", "next-community"],
-                                  help="""Algorithm to use when searching. Nearest mode will take all direct
-                                  neighbors to the target, sort them by connection strength, and return the top N of
-                                  those. BFS-terminal will execute a breadth-first search to the target depth, then choose
-                                  the top N nodes with the strongest connection to the target. Next-community mode will
-                                  act similar to BFS-terminal, but will start from the bounds of the community instead.""")
-    contact_parser.set_defaults(func=_whodoitalkto)
+    mass_comparison_parser = subparsers.add_parser("mass-comparison", help="Mass comparison of different repositories")
+    mass_comparison_parser.add_argument("file", type=argparse.FileType("r"),
+                                        help="File containing list of repositories")
+    mass_comparison_parser.add_argument("-a", "--alpha", help="Alpha factor for various algorithms", type=float,
+                                        default=0.85)
+    mass_comparison_parser.add_argument("-b", "--beta", help="Beta factor for various algorithms", type=float,
+                                        default=1)
+    mass_comparison_parser.add_argument("-m", "--max-iter", help="Max iterations for iterative-based solvers", type=int,
+                                        default=500)
+    mass_comparison_parser.add_argument("-n", "--number", type=int, help="Number of results N to use in the lists.",
+                                        default=15)
+    mass_comparison_parser.set_defaults(func=_mass_analysis)
 
     return parser
 
@@ -131,7 +143,7 @@ def _visualize(args: argparse.Namespace, commits: List[Commit]):
     if args.layout == "kamada":
         pos = nx.kamada_kawai_layout(graph, center=(0.5, 0.5), scale=0.5, weight="count")
     else:
-        pos = nx.spring_layout(graph, center=(0.5, 0.5), scale=0.5, k=1/len(graph)**0.1, seed=1)
+        pos = nx.spring_layout(graph, center=(0.5, 0.5), scale=0.5, k=1 / len(graph) ** 0.1, seed=1)
 
     # Base edges
     nx.draw_networkx_edges(graph, pos=pos, width=0.1, alpha=0.3)
@@ -146,7 +158,8 @@ def _visualize(args: argparse.Namespace, commits: List[Commit]):
     count_range = max_count - min_count
     max_size = 75
     min_size = 5
-    node_sizes = [((graph.nodes[n]["count"] - min_count) / count_range) * (max_size - min_size) + min_size for n in graph.nodes]
+    node_sizes = [((graph.nodes[n]["count"] - min_count) / count_range) * (max_size - min_size) + min_size for n in
+                  graph.nodes]
     groups = list(asyn_lpa_communities(graph, weight="count"))
     colors = [[file in group for group in groups].index(True) for file in graph]
     nx.draw_networkx_nodes(graph, pos=pos, node_color=colors, cmap="tab20", node_size=node_sizes)
@@ -154,16 +167,6 @@ def _visualize(args: argparse.Namespace, commits: List[Commit]):
     # Labels
     nx.draw_networkx_labels(graph, pos, font_size=1)
     plt.show()
-
-
-@uses_commits
-def _whodoitalkto(args: argparse.Namespace, commits: List[Commit]):
-    """Function for the whodoitalkto subcommand"""
-    graph = _get_graph(args, commits)
-
-    if args.target not in graph.nodes:
-        print("Target '{}' not found in graph".format(args.target), file=sys.stderr)
-        exit(1)
 
 
 def _filter_dict(filterable: Dict, func):
@@ -216,6 +219,51 @@ def _rank(args: argparse.Namespace):
     # For some reason .corrwith() isn't working -_-
     for column in df.columns:
         print("{:<24}: {:.3f}".format(column, df_predicted[column].corr(df[column], method="spearman")))
+
+
+def _mass_analysis(args: argparse.Namespace):
+    repos: Dict[str, Dict[str, List[str]]] = {}
+    jobs: List[Tuple[str, str, callable, nx.Graph, Dict]] = []
+
+    for repo_name in args.file:
+        print("Parsing commits for {}".format(repo_name.strip()))
+        # Parse repo and generate target graph
+        commits = get_commits_from_repo(repo_name.strip())
+        graph = _get_graph(args, commits)
+        for algo_name, algo in centrality_algo_dict.items():
+            kwargs = _filter_dict({
+                "alpha": args.alpha,
+                "beta": args.beta,
+                "weight": "count",
+                "max_iter": args.max_iter
+            }, algo)
+
+            jobs.append((repo_name.strip(), algo_name, algo, graph, kwargs))
+
+    print("Assembled {} jobs for processing".format(len(jobs)))
+    pool = Pool(8)
+    results = []
+    for result in tqdm.tqdm(pool.imap_unordered(__execute_algo_helper, jobs), total=len(jobs)):
+        results.append(result)
+    pool.close()
+    pool.join()
+
+    with open("data/results.pkl.gz", "wb") as file:
+        pickle.dump(results, file)
+    print("Completed processing!")
+
+
+def __execute_algo_helper(args: Tuple):
+    return __execute_algo(*args)
+
+
+def __execute_algo(repo_name, algo_name, algo, graph, args):
+    """Execute a given algorithm"""
+    try:
+        results, _ = zip(*sorted(algo(graph, **args).items(), key=lambda item: item[1], reverse=True))
+    except Exception:
+        return ()
+    return repo_name, algo_name, results
 
 
 @uses_commits
